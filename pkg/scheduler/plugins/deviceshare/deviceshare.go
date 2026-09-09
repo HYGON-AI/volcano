@@ -30,6 +30,7 @@ import (
 	"volcano.sh/volcano/pkg/scheduler/api/devices/ascend/hami"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/ascend/mindcluster/ascend310p/vnpu"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/config"
+	vhcu "volcano.sh/volcano/pkg/scheduler/api/devices/hygon"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/nvidia/gpushare"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/nvidia/vgpu"
 	"volcano.sh/volcano/pkg/scheduler/framework"
@@ -48,6 +49,8 @@ const (
 
 	AscendMindClusterVNPU = "deviceshare.AscendMindClusterVNPUEnable"
 	AscendHAMiVNPUEnable  = "deviceshare.AscendHAMiVNPUEnable"
+
+	HygonVHCUEnable = "deviceshare.VHCUEnable"
 
 	SchedulePolicyArgument = "deviceshare.SchedulePolicy"
 	ScheduleWeight         = "deviceshare.ScheduleWeight"
@@ -103,14 +106,17 @@ func enablePredicate(dsp *deviceSharePlugin) {
 	args.GetBool(&vgpu.VGPUEnable, VGPUEnable)
 	args.GetBool(&vnpu.AscendMindClusterVNPUEnable, AscendMindClusterVNPU)
 	args.GetBool(&hami.AscendHAMiVNPUEnable, AscendHAMiVNPUEnable)
+	args.GetBool(&vhcu.HygonVHCUEnable, HygonVHCUEnable)
 
 	gpushare.NodeLockEnable = nodeLockEnable
 	vgpu.NodeLockEnable = nodeLockEnable
 	hami.NodeLockEnable = nodeLockEnable
+	vhcu.NodeLockEnable = nodeLockEnable
 
 	args.GetString(&dsp.schedulePolicy, SchedulePolicyArgument)
 	args.GetInt(&dsp.scheduleWeight, ScheduleWeight)
 	vgpu.SchedulePolicy = dsp.schedulePolicy
+	vhcu.SchedulePolicyArgument = dsp.schedulePolicy
 
 	if gpushare.GpuSharingEnable && gpushare.GpuNumberEnable {
 		klog.Fatal("can not define true in both gpu sharing and gpu number")
@@ -146,6 +152,9 @@ func registerDevices() {
 					api.RegisterDevice(vnpu.CommonWord)
 				}
 			}
+		}
+		if vhcu.HygonVHCUEnable {
+			api.RegisterDevice(vhcu.DeviceName)
 		}
 	})
 }
@@ -228,6 +237,28 @@ func (dp *deviceSharePlugin) OnSessionOpen(ssn *framework.Session) {
 
 	// initialize devices which needs ssn as input
 	initializeDevicesWithSession(ssn)
+
+	// The snapshot was taken before enablePredicate ran, so nodes may not have HCU devices
+	// in their Others map. Refresh them now that HygonVHCUEnable is set correctly.
+	if vhcu.HygonVHCUEnable {
+		for _, nodeInfo := range ssn.Nodes {
+			if nodeInfo.Node == nil {
+				continue
+			}
+			hcuDevices := vhcu.NewHCUDevices(nodeInfo.Name, nodeInfo.Node)
+			nodeInfo.Others[vhcu.DeviceName] = hcuDevices
+			if hcuDevices == nil {
+				continue
+			}
+			// Re-populate HCU usage from already-allocated pods so that binpack
+			// scoring can see the current utilization of each physical HCU.
+			for _, task := range nodeInfo.Tasks {
+				if _, ok := task.Pod.Annotations[vhcu.AssignedIDsAllocatedAnnotations]; ok {
+					hcuDevices.AddResource(task.Pod)
+				}
+			}
+		}
+	}
 
 	// Register event handlers to update task info in PodLister & nodeMap
 	ssn.AddPredicateFn(dp.Name(), func(task *api.TaskInfo, node *api.NodeInfo) error {

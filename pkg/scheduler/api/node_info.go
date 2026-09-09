@@ -31,6 +31,7 @@ import (
 	"volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/ascend/hami"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/ascend/mindcluster/ascend310p/vnpu"
+	vhcu "volcano.sh/volcano/pkg/scheduler/api/devices/hygon"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/nvidia/gpushare"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/nvidia/vgpu"
 )
@@ -384,6 +385,13 @@ func (ni *NodeInfo) setNodeOthersResource(node *v1.Node) {
 			ignored_list = append(ignored_list, devices.GetIgnoredDevices()...)
 		}
 	}
+	if vhcu.HygonVHCUEnable {
+		hcuDev := vhcu.NewHCUDevices(ni.Name, node)
+		ni.Others[vhcu.DeviceName] = hcuDev
+		if hcuDev != nil {
+			ignored_list = append(ignored_list, hcuDev.GetIgnoredDevices()...)
+		}
+	}
 	klog.V(5).Infof("ignored_list is %v", ignored_list)
 	IgnoredDevicesList.AppendList(
 		ignored_list,
@@ -551,6 +559,13 @@ func (ni *NodeInfo) addResource(pod *v1.Pod) {
 			}
 		}
 	}
+	if vhcu.HygonVHCUEnable {
+		if other, exists := ni.Others[vhcu.DeviceName]; exists {
+			if devices, ok := other.(Devices); ok {
+				devices.AddResource(pod)
+			}
+		}
+	}
 }
 
 // subResource is used to subtract sharable devices
@@ -582,6 +597,13 @@ func (ni *NodeInfo) subResource(pod *v1.Pod) {
 				if devices, ok := other.(Devices); ok {
 					devices.SubResource(pod)
 				}
+			}
+		}
+	}
+	if vhcu.HygonVHCUEnable {
+		if other, exists := ni.Others[vhcu.DeviceName]; exists {
+			if devices, ok := other.(Devices); ok {
+				devices.SubResource(pod)
 			}
 		}
 	}

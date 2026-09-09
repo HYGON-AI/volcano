@@ -267,6 +267,10 @@ func ExtractResourceRequest(pod *v1.Pod, resourceType, countName, memoryName, pe
 					}
 				}
 			}
+			// Exclusive memory request implies exclusive cores for HCU/vGPU sharing.
+			if mempnum == 100 {
+				corenum = 100
+			}
 			counts = append(counts, ContainerDeviceRequest{
 				Nums:             int32(n),
 				Type:             resourceType,
