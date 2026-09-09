@@ -14,6 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+// Modified by Hygon Information Technology Co., Ltd., 2026.
+
 package config
 
 import (
@@ -49,12 +53,20 @@ const (
    - chipName: 910B3
      commonWord: Ascend910B3
      ...
+
+   hygon:
+     resourceCountName: "hygon.com/hcunum"
+     resourceMemoryName: "hygon.com/hcumem"
+     resourceCoreName: "hygon.com/hcucores"
+     ...
 */
 
 type Config struct {
 	//NvidiaConfig is used for vGPU feature for nvidia, gpushare is not using this config
 	NvidiaConfig NvidiaConfig `yaml:"nvidia"`
 	VNPUs        VNPUsConfig  `yaml:"vnpus"`
+	// HygonConfig is used for Hygon HCU/vHCU feature
+	HygonConfig HygonConfig `yaml:"hygon"`
 }
 
 // VNPUConfigs is a compatibility accessor for external consumers that used to access Config.VNPUs as a slice.
@@ -141,6 +153,17 @@ func GetDefaultDevicesConfig() *Config {
 					},
 				},
 			},
+		},
+		HygonConfig: HygonConfig{
+			ResourceCountName:   HygonVHCUNumber,
+			ResourceCoreName:    HygonVHCUCores,
+			ResourceMemoryName:  HygonVHCUMemory,
+			DefaultMemory:       0,
+			DefaultCores:        0,
+			DefaultHCUNum:       1,
+			DeviceSplitCount:    4,
+			DeviceMemoryScaling: 1, // 1023
+			DeviceCoreScaling:   1,
 		},
 	}
 }

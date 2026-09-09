@@ -4,6 +4,24 @@
 
 -------
 
+## Upstream Attribution / 上游归属
+
+This repository is a HYGON derivative of the upstream [Volcano](https://github.com/volcano-sh/volcano) project.
+
+| Item | Value |
+| --- | --- |
+| Upstream repository | https://github.com/volcano-sh/volcano.git |
+| Upstream branch | `release-1.15` |
+| Upstream Tag | `v1.15.2` |
+| Upstream Commit | `1462fb7b4835970708717456e3aed85e697ec2eb` |
+| Upstream license | Apache-2.0 |
+
+Modified by Hygon Information Technology Co., Ltd.
+
+Third-Party / 第三方来源与许可证说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+-------
+
 [![Build Status](https://travis-ci.org/volcano-sh/volcano.svg?branch=master)](https://travis-ci.org/volcano-sh/volcano)
 [![Go Report Card](https://goreportcard.com/badge/github.com/volcano-sh/volcano)](https://goreportcard.com/report/github.com/volcano-sh/volcano)
 [![RepoSize](https://img.shields.io/github/repo-size/volcano-sh/volcano.svg)](https://github.com/volcano-sh/volcano)

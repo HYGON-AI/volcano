@@ -28,6 +28,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+// Modified by Hygon Information Technology Co., Ltd., 2026.
+
 package devices
 
 import (
@@ -261,6 +265,9 @@ func ExtractResourceRequest(pod *v1.Pod, resourceType, countName, memoryName, pe
 						corenum = int32(corenums)
 					}
 				}
+			}
+			if mempnum == 100 {
+				corenum = 100
 			}
 			counts = append(counts, ContainerDeviceRequest{
 				Nums:             int32(n),

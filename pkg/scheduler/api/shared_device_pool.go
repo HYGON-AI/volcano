@@ -14,6 +14,8 @@
  limitations under the License.
 */
 
+// Modified by Hygon Information Technology Co., Ltd., 2026.
+
 package api
 
 import (
@@ -26,6 +28,7 @@ import (
 
 	"volcano.sh/volcano/pkg/scheduler/api/devices/ascend/hami"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/ascend/mindcluster/ascend310p/vnpu"
+	vhcu "volcano.sh/volcano/pkg/scheduler/api/devices/hygon"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/nvidia/gpushare"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/nvidia/vgpu"
 )
@@ -88,6 +91,7 @@ var _ Devices = new(gpushare.GPUDevices)
 var _ Devices = new(vgpu.GPUDevices)
 var _ Devices = new(vnpu.NPUDevices)
 var _ Devices = new(hami.AscendDevices)
+var _ Devices = new(vhcu.HCUDevices)
 
 var RegisteredDevices = []string{}
 
