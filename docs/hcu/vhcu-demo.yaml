@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vhcu-demo
+spec:
+  schedulerName: volcano
+  containers:
+  - name: hcu-app
+    image: your-hcu-runtime-image
+    command: ["bash", "-c", "hy-smi virtual -show-device-info && sleep 3600"]
+    resources:
+      limits:
+        hygon.com/hcunum: 1     # 申请1个vHCU
+        hygon.com/hcumem: 2     # 指定vHCU显存为2GiB
+        hygon.com/hcucores: 50  # 指定vHCU算力为整卡的50%
