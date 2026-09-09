@@ -262,6 +262,9 @@ func ExtractResourceRequest(pod *v1.Pod, resourceType, countName, memoryName, pe
 					}
 				}
 			}
+			if mempnum == 100 {
+				corenum = 100
+			}
 			counts = append(counts, ContainerDeviceRequest{
 				Nums:             int32(n),
 				Type:             resourceType,

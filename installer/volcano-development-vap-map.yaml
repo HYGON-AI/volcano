@@ -9133,6 +9133,10 @@ data:
       - name: proportion
       - name: nodeorder
       - name: binpack
+      - name: deviceshare
+        arguments:
+          deviceshare.VHCUEnable: true
+          deviceshare.SchedulePolicy: binpack
 ---
 # Source: volcano/templates/scheduler.yaml
 kind: ClusterRole
