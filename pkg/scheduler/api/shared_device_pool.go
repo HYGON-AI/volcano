@@ -14,6 +14,8 @@
  limitations under the License.
 */
 
+// Modified by Hygon Information Technology Co., Ltd., 2026.
+
 package api
 
 import (
