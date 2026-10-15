@@ -323,9 +323,15 @@ func (ds *HCUDevices) Allocate(kubeClient kubernetes.Interface, pod *v1.Pod) err
 			return nil
 		}
 		klog.V(4).Infoln("hami-vhcu DeviceSharing:Into AllocateToPod", pod.Name)
+		// the predicate below mutates ds in place, keep a snapshot to roll back on failure
+		snapshot := ds.snapshotUsage(string(pod.UID))
 		fit, devices, score, err := checkNodeHCUSharingPredicateAndScore(pod, ds, false, SchedulePolicyArgument)
 		klog.V(5).Infof("schedulePolicy:%s , Allocate-ds: %+v , devices: %+v , score: %+v", SchedulePolicyArgument, ds, devices, score)
 		if err != nil || !fit {
+			ds.restoreUsage(string(pod.UID), snapshot)
+			if err == nil {
+				err = errors.Errorf("pod %s does not fit node %s", pod.Name, ds.Name)
+			}
 			klog.ErrorS(err, "Failed to allocate vhcu task", "pod", pod.Name)
 			return err
 		}
@@ -335,8 +341,14 @@ func (ds *HCUDevices) Allocate(kubeClient kubernetes.Interface, pod *v1.Pod) err
 			nodelock.UseClient(kubeClient)
 			err = nodelock.LockHCUNode(ds.Name, DeviceName, lockValue)
 			if err != nil {
+				ds.restoreUsage(string(pod.UID), snapshot)
 				return errors.Errorf("node %s locked for %s hami-vhcu lockname %s", ds.Name, pod.Name, err.Error())
 			}
+			defer func() {
+				if relErr := nodelock.ReleaseHCUNodeLock(ds.Name, DeviceName, lockValue); relErr != nil {
+					klog.ErrorS(relErr, "Failed to release node lock", "node", ds.Name, "pod", pod.Name)
+				}
+			}()
 		}
 
 		annotations := make(map[string]string)
@@ -352,14 +364,48 @@ func (ds *HCUDevices) Allocate(kubeClient kubernetes.Interface, pod *v1.Pod) err
 		ds.addToPodMap(annotations, pod)
 		err = patchPodAnnotations(kubeClient, pod, annotations)
 		if err != nil {
+			ds.restoreUsage(string(pod.UID), snapshot)
 			return err
-		}
-		if NodeLockEnable {
-			nodelock.ReleaseHCUNodeLock(ds.Name, DeviceName, lockValue)
 		}
 		klog.V(3).Infoln("DeviceSharing:Allocate Success")
 	}
 	return nil
+}
+
+type deviceUsageSnapshot struct {
+	usedNum  uint
+	usedMem  uint
+	usedCore uint
+	podUsage *HCUUsage // nil if the pod had no entry
+}
+
+func (ds *HCUDevices) snapshotUsage(podUID string) map[int]deviceUsageSnapshot {
+	snap := make(map[int]deviceUsageSnapshot, len(ds.Device))
+	for id, dev := range ds.Device {
+		item := deviceUsageSnapshot{usedNum: dev.UsedNum, usedMem: dev.UsedMem, usedCore: dev.UsedCore}
+		if u, ok := dev.PodMap[podUID]; ok && u != nil {
+			c := *u
+			item.podUsage = &c
+		}
+		snap[id] = item
+	}
+	return snap
+}
+
+func (ds *HCUDevices) restoreUsage(podUID string, snap map[int]deviceUsageSnapshot) {
+	for id, item := range snap {
+		dev, ok := ds.Device[id]
+		if !ok {
+			continue
+		}
+		dev.UsedNum, dev.UsedMem, dev.UsedCore = item.usedNum, item.usedMem, item.usedCore
+		if item.podUsage == nil {
+			delete(dev.PodMap, podUID)
+		} else {
+			c := *item.podUsage
+			dev.PodMap[podUID] = &c
+		}
+	}
 }
 
 func (ds *HCUDevices) TryAddPod(device *HCUDevice, reqmem uint, reqcores uint) (bool, string) {
