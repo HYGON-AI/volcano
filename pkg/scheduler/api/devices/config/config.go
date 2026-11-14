@@ -55,6 +55,8 @@ type Config struct {
 	//NvidiaConfig is used for vGPU feature for nvidia, gpushare is not using this config
 	NvidiaConfig NvidiaConfig `yaml:"nvidia"`
 	VNPUs        VNPUsConfig  `yaml:"vnpus"`
+	// HygonConfig is used for Hygon HCU/vHCU feature
+	HygonConfig HygonConfig `yaml:"hygon"`
 }
 
 // VNPUConfigs is a compatibility accessor for external consumers that used to access Config.VNPUs as a slice.
@@ -142,6 +144,17 @@ func GetDefaultDevicesConfig() *Config {
 				},
 			},
 		},
+		HygonConfig: HygonConfig{
+			ResourceCountName:   ResourceCountName(),
+			ResourceCoreName:    ResourceCoreName(),
+			ResourceMemoryName:  ResourceMemoryName(),
+			DefaultMemory:       0,
+			DefaultCores:        0,
+			DefaultHCUNum:       1,
+			DeviceSplitCount:    4,
+			DeviceMemoryScaling: 1, // 1023
+			DeviceCoreScaling:   1,
+		},
 	}
 }
 
@@ -155,6 +168,7 @@ func InitDevicesConfig(cmName, cmNamespace string) {
 				cmName, cmNamespace, err)
 			configs = GetDefaultDevicesConfig()
 		}
+		applyResourcePrefix(configs)
 		klog.V(3).InfoS("Initializing volcano device config", "device-configs", configs)
 	})
 }
