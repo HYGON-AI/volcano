@@ -14,6 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+// Modified by Hygon Information Technology Co., Ltd., 2026.
+
 package deviceshare
 
 import (
@@ -30,6 +34,7 @@ import (
 	"volcano.sh/volcano/pkg/scheduler/api/devices/ascend/hami"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/ascend/mindcluster/ascend310p/vnpu"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/config"
+	vhcu "volcano.sh/volcano/pkg/scheduler/api/devices/hygon"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/nvidia/gpushare"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/nvidia/vgpu"
 	"volcano.sh/volcano/pkg/scheduler/framework"
@@ -48,6 +53,14 @@ const (
 
 	AscendMindClusterVNPU = "deviceshare.AscendMindClusterVNPUEnable"
 	AscendHAMiVNPUEnable  = "deviceshare.AscendHAMiVNPUEnable"
+
+	HygonVHCUEnable = "deviceshare.VHCUEnable"
+
+	// ResourcePrefix is the product-family prefix for Hygon vHCU resource
+	// names and HAMi annotations. Any product family containing "cu" is
+	// accepted (hcu | *cu | dcu | acu | …, default hcu). Must match
+	// k8s-hcu-device-plugin's RESOURCE_PREFIX.
+	ResourcePrefix = "deviceshare.ResourcePrefix"
 
 	SchedulePolicyArgument = "deviceshare.SchedulePolicy"
 	ScheduleWeight         = "deviceshare.ScheduleWeight"
@@ -103,14 +116,17 @@ func enablePredicate(dsp *deviceSharePlugin) {
 	args.GetBool(&vgpu.VGPUEnable, VGPUEnable)
 	args.GetBool(&vnpu.AscendMindClusterVNPUEnable, AscendMindClusterVNPU)
 	args.GetBool(&hami.AscendHAMiVNPUEnable, AscendHAMiVNPUEnable)
+	args.GetBool(&vhcu.HygonVHCUEnable, HygonVHCUEnable)
 
 	gpushare.NodeLockEnable = nodeLockEnable
 	vgpu.NodeLockEnable = nodeLockEnable
 	hami.NodeLockEnable = nodeLockEnable
+	vhcu.NodeLockEnable = nodeLockEnable
 
 	args.GetString(&dsp.schedulePolicy, SchedulePolicyArgument)
 	args.GetInt(&dsp.scheduleWeight, ScheduleWeight)
 	vgpu.SchedulePolicy = dsp.schedulePolicy
+	vhcu.SchedulePolicyArgument = dsp.schedulePolicy
 
 	if gpushare.GpuSharingEnable && gpushare.GpuNumberEnable {
 		klog.Fatal("can not define true in both gpu sharing and gpu number")
@@ -118,6 +134,15 @@ func enablePredicate(dsp *deviceSharePlugin) {
 	if (gpushare.GpuSharingEnable || gpushare.GpuNumberEnable) && vgpu.VGPUEnable {
 		klog.Fatal("gpu-share and vgpu can't be used together")
 	}
+
+	resourcePrefix := ""
+	args.GetString(&resourcePrefix, ResourcePrefix)
+	if err := config.InitResourcePrefix(resourcePrefix); err != nil {
+		klog.Fatalf("invalid %s: %v", ResourcePrefix, err)
+	}
+	vhcu.ApplyResourcePrefix(config.ResourcePrefix())
+	klog.V(3).Infof("RESOURCE_PREFIX=%s (count=%s core=%s memory=%s)",
+		config.ResourcePrefix(), config.ResourceCountName(), config.ResourceCoreName(), config.ResourceMemoryName())
 
 	knownGeometriesCMName := "volcano-vgpu-device-config"
 	args.GetString(&knownGeometriesCMName, KnownGeometriesCMName)
@@ -147,6 +172,9 @@ func registerDevices() {
 				}
 			}
 		}
+		if vhcu.HygonVHCUEnable {
+			api.RegisterDevice(vhcu.DeviceName)
+		}
 	})
 }
 
@@ -161,11 +189,15 @@ func createStatus(code int, reason string) *api.Status {
 func getDeviceScore(ctx context.Context, pod *v1.Pod, node *api.NodeInfo, schedulePolicy string) (int64, *fwk.Status) {
 	s := float64(0)
 	for deviceType, device := range node.Others {
-		if device.(api.Devices).HasDeviceRequest(pod) {
+		d, ok := device.(api.Devices)
+		if !ok || reflect.ValueOf(d).IsNil() {
+			continue
+		}
+		if d.HasDeviceRequest(pod) {
 			// Only process device types that use NodeOrderFn (vgpu and gpushare)
 			// vnpu devices use BatchNodeOrderFn, skip them here
 			if deviceType != vnpu.DeviceName {
-				ns := device.(api.Devices).ScoreNode(pod, schedulePolicy)
+				ns := d.ScoreNode(pod, schedulePolicy)
 				s += ns
 			}
 		}
@@ -229,6 +261,30 @@ func (dp *deviceSharePlugin) OnSessionOpen(ssn *framework.Session) {
 	// initialize devices which needs ssn as input
 	initializeDevicesWithSession(ssn)
 
+	// The snapshot was taken before enablePredicate ran, so nodes may not have HCU devices
+	// in their Others map. Refresh them now that HygonVHCUEnable is set correctly.
+	if vhcu.HygonVHCUEnable {
+		for _, nodeInfo := range ssn.Nodes {
+			if nodeInfo.Node == nil {
+				continue
+			}
+			hcuDevices := vhcu.NewHCUDevices(nodeInfo.Name, nodeInfo.Node)
+			nodeInfo.Others[vhcu.DeviceName] = hcuDevices
+			if hcuDevices == nil {
+				continue
+			}
+			// Re-populate HCU usage from already-allocated pods so that binpack
+			// scoring can see the current utilization of each physical HCU.
+			for _, task := range nodeInfo.Tasks {
+				if task.Pod == nil {
+					continue
+				}
+				if _, ok := task.Pod.Annotations[vhcu.AssignedIDsAllocatedAnnotations]; ok {
+					hcuDevices.AddResource(task.Pod)
+				}
+			}
+		}
+	}
 	// Register event handlers to update task info in PodLister & nodeMap
 	ssn.AddPredicateFn(dp.Name(), func(task *api.TaskInfo, node *api.NodeInfo) error {
 		predicateStatus := make([]*api.Status, 0)
@@ -236,6 +292,14 @@ func (dp *deviceSharePlugin) OnSessionOpen(ssn *framework.Session) {
 		for _, val := range api.RegisteredDevices {
 			if dev, ok := node.Others[val].(api.Devices); ok {
 				if reflect.ValueOf(dev).IsNil() {
+					// A pod requesting this device type must not be bound to a
+					// node whose device info is missing (e.g. device plugin
+					// restarting), otherwise it would be bound without any
+					// allocation annotations.
+					if val == vhcu.DeviceName && task.Pod != nil && vhcu.PodRequestsHCU(task.Pod) {
+						klog.V(4).Infof("pod %s/%s requests device %s but node %s has no HCU device info, rejecting", task.Pod.Namespace, task.Pod.Name, val, node.Name)
+						return api.NewFitErrWithStatus(task, node, createStatus(api.Unschedulable, "node has no HCU device information"))
+					}
 					klog.V(4).Infof("device %s is null, skipping it", val)
 					continue
 				}

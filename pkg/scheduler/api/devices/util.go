@@ -267,6 +267,11 @@ func ExtractResourceRequest(pod *v1.Pod, resourceType, countName, memoryName, pe
 					}
 				}
 			}
+			// Hygon vHCU semantics: a 100% memory request implies a whole-card
+			// request, so treat the core request as 100% too.
+			if mempnum == 100 {
+				corenum = 100
+			}
 			counts = append(counts, ContainerDeviceRequest{
 				Nums:             int32(n),
 				Type:             resourceType,

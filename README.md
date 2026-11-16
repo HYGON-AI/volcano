@@ -174,8 +174,6 @@ If you don't have a kubernetes cluster, try one-click install from code base:
 ./hack/local-up-volcano.sh
 ```
 
-This way is only available for x86_64 temporarily.
-
 ### Install volcano agent
 
 Please follow the guide [Volcano Agent](https://volcano.sh/en/docs/colocation) to install volcano agent.
@@ -192,6 +190,107 @@ kubectl create -f installer/volcano-monitoring.yaml
 
 Please follow the guide [Volcano Dashboard](https://github.com/volcano-sh/dashboard#volcano-dashboard) to install volcano dashboard.
 
+## HCU/DCU vHCU 资源前缀（resource_prefix）使用说明
+
+本仓库在 volcano 调度器中新增了 **Hygon HCU/DCU vHCU 虚拟化调度支持**，通过 `deviceshare.ResourcePrefix` 配置项实现资源名前缀可配置，使调度器可适配 **hcu、dcu、*cu、acu、bcu、ccu** 等任意含 `cu` 的产品族前缀。
+
+### 1. 配置项
+
+调度器配置文件（ConfigMap `volcano-scheduler-configmap`）中 deviceshare 插件的参数：
+
+```yaml
+tiers:
+- plugins:
+  - name: deviceshare
+    arguments:
+      deviceshare.VHCUEnable: true          # 启用 vHCU 虚拟化调度
+      deviceshare.SchedulePolicy: binpack   # 装箱策略（可选 spread）
+      deviceshare.ResourcePrefix: hcu       # 资源名前缀，见下表
+```
+
+**前缀校验规则**：任意包含 `cu` 的小写前缀均为合法值（`hcu`、`*cu`、`dcu`、`acu`、`bcu`、`ccu` 等）；不含 `cu` 的值（如 `gpu`）为非法值，调度器启动时直接拒绝（`Fatal: invalid deviceshare.ResourcePrefix: ... want a product family containing "cu"`）。取值必须与 HCU Device Plugin 的 `RESOURCE_PREFIX` 环境变量保持一致。
+
+### 2. 前缀对应关系
+
+| `deviceshare.ResourcePrefix` | 扩展资源名 | Pod 分配注解 | 节点注册注解 |
+| ---------------------------- | --------------------------------------- | ---------------------------------------------- | ------------------------ |
+| `hcu` | `hygon.com/hcunum`、`hygon.com/hcucores`、`hygon.com/hcumem` | `hami.io/hcu-devices-to-allocate`、`hami.io/hcu-devices-allocated` | `hami.io/node-hcu-register`、`hami.io/node-handshake-hcu` |
+| `dcu` | `hygon.com/dcunum`、`hygon.com/dcucores`、`hygon.com/dcumem` | `hami.io/dcu-devices-to-allocate`、`hami.io/dcu-devices-allocated` | `hami.io/node-dcu-register`、`hami.io/node-handshake-dcu` |
+| 其他含 `cu` 前缀（`acu`/`bcu`/`ccu`） | `hygon.com/<前缀>num` 等 | `hami.io/<前缀>-devices-*` | `hami.io/node-<前缀>-register` 等 |
+
+> **注意**：`*cu` 前缀可通过调度器校验，但 `*` 不是 Kubernetes 资源名/注解名的合法字符（仅允许字母数字及 `-`、`_`、`.`），设备插件的节点注册注解与 Pod 资源请求会被 apiserver 拒绝。若需支持旧集群 `*cu` 工作负载，设备插件侧需做资源名映射。
+
+### 3. 切换前缀（调度器 + 设备插件两处同步修改）
+
+```bash
+# ① 调度器：修改 ConfigMap 前缀并重启
+kubectl -n volcano-system get cm volcano-scheduler-configmap -o yaml \
+  | sed 's/deviceshare.ResourcePrefix: .*/deviceshare.ResourcePrefix: dcu/' | kubectl apply -f -
+kubectl -n volcano-system rollout restart deploy/volcano-scheduler
+
+# ② 设备插件：修改 RESOURCE_PREFIX 环境变量（节点资源随之重注册）
+kubectl -n kube-system set env ds/hcu-device-plugin-hami RESOURCE_PREFIX=dcu
+
+# ③ 验证
+kubectl -n volcano-system logs deploy/volcano-scheduler | grep "RESOURCE_PREFIX=" | tail -1
+# 预期：RESOURCE_PREFIX=dcu (count=hygon.com/dcunum core=hygon.com/dcucores memory=hygon.com/dcumem)
+kubectl get node <节点> -o jsonpath='{.status.allocatable}' | tr ',' '\n' | grep dcunum
+# 预期：dcunum=4、dcucores=100、dcumem=65520（数值随物理卡配置）
+```
+
+### 4. 工作负载 YAML 示例
+
+**虚拟卡（HCU，申请 1 个 vHCU 单元 + 2048MB 显存 + 30% 算力）：**
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vhcu-demo
+spec:
+  schedulerName: volcano
+  containers:
+  - name: app
+    image: <your-image>
+    resources:
+      limits:
+        hygon.com/hcunum: 1      # vHCU 单元数
+        hygon.com/hcumem: 2048   # 显存（MB）
+        hygon.com/hcucores: 30   # 算力（百分比）
+```
+
+**虚拟卡（DCU，同结构换前缀资源名）：**
+
+```yaml
+    resources:
+      limits:
+        hygon.com/dcunum: 1
+        hygon.com/dcumem: 2048
+        hygon.com/dcucores: 30
+```
+
+**整卡独占（100% 算力 + 全部显存触发独占；`<前缀>num` 语义为物理卡数量）：**
+
+```yaml
+    resources:
+      limits:
+        hygon.com/hcunum: 1      # 物理卡数量（单卡节点填 1）
+        hygon.com/hcumem: 65520  # 全部显存（MB）
+        hygon.com/hcucores: 100  # 100% 算力 → 独占
+```
+
+### 5. 实测结论（129 环境，K100_AI 单卡）
+
+| 测试项 | 结果 |
+| --- | --- |
+| 前缀矩阵 hcu/dcu/acu/bcu/ccu | ✅ 各前缀下虚拟卡 Pod 均正常调度运行（调度器前缀日志、节点资源、分配注解全部正确） |
+| gpu 非法前缀 | ✅ 调度器启动即 Fatal 拒绝 |
+| 虚拟卡/整卡/共享/VolcanoJob 用例（hcu） | ✅ 全部通过（虚拟卡 30%→36CU/2GB 精确匹配；整卡独占反证 Pending；20+20 同卡共享；2 副本成组） |
+| 训练冒烟（hcu + dcu，虚拟卡 + 整卡） | ✅ 4 组全部 TRAIN_OK（虚拟卡 ~129 ms/step、整卡 ~50 ms/step，fp16 matmul 35/104 TFLOPS，算力限制与显存限制均真实生效） |
+
+更多细节见 [docs/hcu/README.md](docs/hcu/README.md) 与示例 [docs/hcu/vhcu-demo.yaml](docs/hcu/vhcu-demo.yaml)。
+
+This way is only available for x86_64 temporarily.
 ## Kubernetes compatibility
 |                       | Kubernetes 1.36 | Kubernetes 1.35 | Kubernetes 1.34 | Kubernetes 1.33 | Kubernetes 1.32 | Kubernetes 1.31 | Kubernetes 1.30 | Kubernetes 1.29 | Kubernetes 1.28 | Kubernetes 1.27 | Kubernetes 1.26 | Kubernetes 1.25 | Kubernetes 1.24 | Kubernetes 1.23 | Kubernetes 1.22 | Kubernetes 1.21 |
 |-----------------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|-----------------|
