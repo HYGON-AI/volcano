@@ -177,7 +177,7 @@ func setHCUNodeLock(nodeName string, lockName string, lockValue string) error {
 	}
 	err = updateNodeAnnotations(ctx, node, updateFunc)
 	if err != nil {
-		return fmt.Errorf("setNodeLock exceeds retry count %d", MaxLockRetry)
+		return fmt.Errorf("setNodeLock exceeds retry count %d: %w", MaxLockRetry, err)
 	}
 	klog.InfoS("Node lock set", "node", nodeName)
 	return nil
@@ -199,7 +199,7 @@ func ReleaseHCUNodeLock(nodeName string, lockName string, lockValue string) erro
 	}
 	err = updateNodeAnnotations(ctx, node, updateFunc)
 	if err != nil {
-		return fmt.Errorf("releaseNodeLock exceeds retry count %d", MaxLockRetry)
+		return fmt.Errorf("releaseNodeLock exceeds retry count %d: %w", MaxLockRetry, err)
 	}
 	klog.InfoS("Node lock released", "node", nodeName)
 	return nil

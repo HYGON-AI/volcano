@@ -67,7 +67,6 @@ func encodeContainerDevices(cd []ContainerDevice) string {
 	}
 	klog.V(4).Infoln("Encoded container Devices=", tmp)
 	return tmp
-	//return strings.Join(cd, ",")
 }
 
 func encodePodDevices(pd []ContainerDevices) string {
@@ -85,12 +84,17 @@ func decodeContainerDevices(str string) ContainerDevices {
 	cd := strings.Split(str, ":")
 	contdev := ContainerDevices{}
 	tmpdev := ContainerDevice{}
-	if len(str) == 0 {
-		return contdev
-	}
 	for _, val := range cd {
 		if strings.Contains(val, ",") {
 			tmpstr := strings.Split(val, ",")
+			// Guard against malformed annotation segments (e.g. annotations
+			// written by hand or by a buggy component): a valid segment carries
+			// at least 4 comma-separated fields (uuid,type,usedmem,usedcores),
+			// matching the protection decodeNodeDevices applies to node info.
+			if len(tmpstr) < 4 {
+				klog.Errorf("invalid HCU container device annotation segment %q: expected at least 4 comma-separated fields, got %d, skipping", val, len(tmpstr))
+				continue
+			}
 			tmpdev.UUID = tmpstr[0]
 			tmpdev.Type = tmpstr[1]
 			devmem, _ := strconv.ParseInt(tmpstr[2], 10, 32)
@@ -305,17 +309,26 @@ func checkNodeHCUSharingPredicateAndScore(pod *v1.Pod, dssnap *HCUDevices, repli
 			}
 
 			for _, i := range preAllocatedIdx {
+				if i < 0 || i >= len(ds.Device) {
+					klog.Errorf("topology-selected device index %d out of range (node has %d devices)", i, len(ds.Device))
+					return false, []ContainerDevices{}, 0, fmt.Errorf("topology-selected device index %d out of range", i)
+				}
 				if !checkType(pod.Annotations, *ds.Device[i], request) {
 					klog.Errorln("failed checktype", ds.Device[i].Type, request.Type)
 					return false, []ContainerDevices{}, 0, fmt.Errorf("failed checktype %s vs %s", ds.Device[i].Type, request.Type)
 				}
 
-				_, uuid := ds.TryAddPod(ds.Device[i], uint(float64(ds.Device[i].Memory)*float64(request.MemPercentagereq)/100.0), uint(request.Coresreq))
+				memreqForCard := uint(float64(ds.Device[i].Memory) * float64(request.MemPercentagereq) / 100.0)
+				fit, uuid := ds.TryAddPod(ds.Device[i], memreqForCard, uint(request.Coresreq))
+				if !fit {
+					klog.Errorln("topology-selected device does not fit", ds.Device[i].ID, uuid)
+					return false, []ContainerDevices{}, 0, fmt.Errorf("topology-selected device %d (%s) does not fit", ds.Device[i].ID, uuid)
+				}
 				klog.V(3).Info("fitted uuid: ", uuid)
 				devs = append(devs, ContainerDevice{
 					UUID:      uuid,
 					Type:      request.Type,
-					Usedmem:   uint(float64(ds.Device[i].Memory) * float64(request.MemPercentagereq) / 100.0),
+					Usedmem:   memreqForCard,
 					Usedcores: uint(request.Coresreq),
 				})
 				score += HCUScore(schedulePolicy, ds.Device[i])
@@ -411,6 +424,12 @@ func checkNodeHCUSharingPredicateAndScore(pod *v1.Pod, dssnap *HCUDevices, repli
 }
 
 func HCUScore(schedulePolicy string, device *HCUDevice) float64 {
+	// Guard against malformed device info (e.g. node annotation parse
+	// failures leave Number/Cores/Memory as 0): dividing by zero would
+	// produce +Inf scores and distort binpack ordering.
+	if device == nil || device.Number == 0 || device.Cores == 0 || device.Memory == 0 {
+		return 0
+	}
 	var score float64
 	numScore := float32(device.UsedNum) / float32(device.Number)
 	coreScore := float32(device.UsedCore) / float32(device.Cores)
@@ -500,6 +519,14 @@ func FilterTopologyByAllocated(topo *Topology, allocatedIDs []int) *Topology {
 	if topo == nil || len(topo.Matrix) == 0 {
 		return topo
 	}
+	// The matrix must be square; malformed configmap data would otherwise
+	// cause out-of-range panics when reading Matrix[i][i] below.
+	for i, row := range topo.Matrix {
+		if len(row) != len(topo.Matrix) {
+			klog.Errorf("topology matrix is not square (row %d has %d entries, expected %d), ignoring topology", i, len(row), len(topo.Matrix))
+			return nil
+		}
+	}
 
 	// Build the allocated set
 	alloc := make(map[int]struct{}, len(allocatedIDs))
@@ -531,6 +558,17 @@ func FilterTopologyByAllocated(topo *Topology, allocatedIDs []int) *Topology {
 }
 
 func SelectBestDevices(topo *Topology, k int) []int {
+	if topo == nil || len(topo.Matrix) == 0 {
+		return nil
+	}
+	// The matrix must be square; malformed configmap data would otherwise
+	// cause out-of-range panics when reading Matrix[idx][idx] below.
+	for i, row := range topo.Matrix {
+		if len(row) != len(topo.Matrix) {
+			klog.Errorf("topology matrix is not square (row %d has %d entries, expected %d), ignoring topology", i, len(row), len(topo.Matrix))
+			return nil
+		}
+	}
 	n := len(topo.Matrix)
 	if k <= 0 || k > n {
 		return nil
